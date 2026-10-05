@@ -16,6 +16,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.RejectedExecutionException
 
@@ -28,7 +29,7 @@ class APIControllerMetricsTest {
     @BeforeEach
     fun setUp() {
         registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
-        controller = APIController(registry)
+        controller = APIController(registry, Duration.ofMillis(1500))
         orderRepository = OrderRepository()
         orderPayer = mock(OrderPayer::class.java)
         ReflectionTestUtils.setField(controller, "orderRepository", orderRepository)
@@ -71,8 +72,8 @@ class APIControllerMetricsTest {
             .andReturn().response
 
         val retryAfter = response.getHeader("Retry-After")!!.toLong()
-        assertTrue(retryAfter >= before + 1000)
-        assertTrue(retryAfter <= System.currentTimeMillis() + 1000)
+        assertTrue(retryAfter >= before + 1500)
+        assertTrue(retryAfter <= System.currentTimeMillis() + 1500)
         assertEquals("", response.contentAsString)
         assertEquals(APIController.OrderStatus.COLLECTING, orderRepository.findById(order.id)!!.status)
         assertCount("accepted", 0.0)
