@@ -22,34 +22,42 @@ class PaymentLoadManagerTest {
     private val account = PaymentAccountProperties("test", "acc-5", 5, 3, 30, Duration.ofMillis(4900), true)
 
     @Test
-    fun `admission uses remaining deadline and configured margin and release is idempotent`() {
-        val paymentLoadManager = PaymentLoadManager(account, Duration.ofSeconds(10), 16, clock)
+    fun `admission uses remaining deadline and configured divisor and release is idempotent`() {
+        val paymentLoadManager = PaymentLoadManager(account, 3, 16, clock)
         assertEquals(Duration.ofMillis(980), paymentLoadManager.retryAfter)
-        assertNull(paymentLoadManager.tryReserve(114_899))
-        val reservation = paymentLoadManager.tryReserve(114_900)
+        assertNull(paymentLoadManager.tryReserve(107_349))
+        val reservation = paymentLoadManager.tryReserve(107_350)
         assertNotNull(reservation)
-        assertNull(paymentLoadManager.tryReserve(114_900))
+        assertNull(paymentLoadManager.tryReserve(107_350))
         reservation!!.close()
         reservation.close()
-        val next = paymentLoadManager.tryReserve(114_900)
+        val next = paymentLoadManager.tryReserve(107_350)
         assertNotNull(next)
-        assertNull(paymentLoadManager.tryReserve(114_900))
+        assertNull(paymentLoadManager.tryReserve(107_350))
         next!!.close()
-        val withoutMargin = PaymentLoadManager(account, Duration.ZERO, 16, clock)
-        withoutMargin.tryReserve(104_900)!!.close()
+        val largerReserve = PaymentLoadManager(account, 2, 16, clock)
+        assertNull(largerReserve.tryReserve(109_799))
+        largerReserve.tryReserve(109_800)!!.close()
+        val shortDeadline = PaymentLoadManager(
+            account.copy(parallelRequests = 10_000, rateLimitPerSec = 110, averageProcessingTime = Duration.ofSeconds(1)),
+            3, 16, clock
+        )
+        val reservations = (1..17).map { shortDeadline.tryReserve(103_000)!! }
+        assertNull(shortDeadline.tryReserve(103_000))
+        reservations.forEach { it.close() }
     }
 
     @Test
     fun `simultaneous requests cannot overbook the deadline budget`() {
-        val paymentLoadManager = PaymentLoadManager(account, Duration.ofSeconds(10), 16, clock)
+        val paymentLoadManager = PaymentLoadManager(account, 3, 16, clock)
         val callers = Executors.newFixedThreadPool(8)
         try {
             val reservations = callers.invokeAll((1..100).map {
                 Callable { paymentLoadManager.tryReserve(160_000) }
             }).mapNotNull { it.get() }
-            assertEquals(47, reservations.size)
+            assertEquals(36, reservations.size)
             reservations.forEach { it.close() }
-            paymentLoadManager.tryReserve(114_900)!!.close()
+            paymentLoadManager.tryReserve(107_350)!!.close()
         } finally {
             callers.shutdownNow()
         }
@@ -57,7 +65,7 @@ class PaymentLoadManagerTest {
 
     @Test
     fun `provider processing is excluded from waiting count and exception restores it`() {
-        val paymentLoadManager = PaymentLoadManager(account, Duration.ofSeconds(10), 16, clock)
+        val paymentLoadManager = PaymentLoadManager(account, 3, 16, clock)
         val first = paymentLoadManager.tryReserve(160_000)!!
         val entered = CountDownLatch(1)
         val finish = CountDownLatch(1)
@@ -73,15 +81,15 @@ class PaymentLoadManagerTest {
                 }
             }
             assertTrue(entered.await(5, TimeUnit.SECONDS))
-            val next = paymentLoadManager.tryReserve(114_900)
+            val next = paymentLoadManager.tryReserve(107_350)
             assertNotNull(next)
-            assertNull(paymentLoadManager.tryReserve(114_900))
+            assertNull(paymentLoadManager.tryReserve(107_350))
             next!!.close()
             finish.countDown()
             task.get(5, TimeUnit.SECONDS)
-            assertNull(paymentLoadManager.tryReserve(114_900))
+            assertNull(paymentLoadManager.tryReserve(107_350))
             first.close()
-            paymentLoadManager.tryReserve(114_900)!!.close()
+            paymentLoadManager.tryReserve(107_350)!!.close()
         } finally {
             finish.countDown()
             first.close()
@@ -93,26 +101,26 @@ class PaymentLoadManagerTest {
     fun `estimation respects rate limit and worker count`() {
         val slowRate = PaymentLoadManager(
             account.copy(rateLimitPerSec = 1, averageProcessingTime = Duration.ofMillis(100)),
-            Duration.ZERO, 16, clock
+            3, 16, clock
         )
         assertEquals(Duration.ofSeconds(1), slowRate.retryAfter)
-        val first = slowRate.tryReserve(100_100)!!
-        assertNull(slowRate.tryReserve(101_099))
-        slowRate.tryReserve(101_100)!!.close()
+        val first = slowRate.tryReserve(100_150)!!
+        assertNull(slowRate.tryReserve(101_649))
+        slowRate.tryReserve(101_650)!!.close()
         first.close()
 
         val workerLimited = PaymentLoadManager(
             account.copy(parallelRequests = 30, rateLimitPerSec = 100),
-            Duration.ZERO, 4, clock
+            3, 4, clock
         )
         assertEquals(Duration.ofMillis(1225), workerLimited.retryAfter)
-        val pending = workerLimited.tryReserve(104_900)!!
-        assertNull(workerLimited.tryReserve(106_124))
-        workerLimited.tryReserve(106_125)!!.close()
+        val pending = workerLimited.tryReserve(107_350)!!
+        assertNull(workerLimited.tryReserve(109_187))
+        workerLimited.tryReserve(109_188)!!.close()
         pending.close()
         val fractionalRate = PaymentLoadManager(
             account.copy(rateLimitPerSec = 3, averageProcessingTime = Duration.ofMillis(100)),
-            Duration.ZERO, 16, clock
+            3, 16, clock
         )
         assertEquals(Duration.ofMillis(334), fractionalRate.retryAfter)
     }
@@ -127,7 +135,7 @@ class PaymentLoadManagerTest {
         }
         `when`(second.tryReservePayment(anyLong()))
             .thenThrow(PaymentRejectedException(Duration.ofSeconds(2), "Deadline"))
-        val service = PaymentSystemImpl(listOf(first, second), Duration.ofSeconds(10))
+        val service = PaymentSystemImpl(listOf(first, second), 3)
         val accountRejection = assertThrows(PaymentRejectedException::class.java) {
             service.reservePayment(System.currentTimeMillis() + 60_000)
         }
@@ -141,7 +149,7 @@ class PaymentLoadManagerTest {
         }
         assertEquals(Duration.ofSeconds(2), combinedRejection.retryAfter)
         assertEquals(3, releases.get())
-        val reservation = service.reservePayment(System.currentTimeMillis() + 120_000)
+        val reservation = service.reservePayment(System.currentTimeMillis() + 150_000)
         assertEquals(Duration.ofSeconds(2), reservation.retryAfter)
         reservation.close()
         reservation.close()
@@ -149,11 +157,11 @@ class PaymentLoadManagerTest {
     }
 
     @Test
-    fun `fixed safety margin is applied once for sequential accounts`() {
+    fun `fractional deadline reserve is applied once for sequential accounts`() {
         val windows = List(2) {
             PaymentLoadManager(
                 account.copy(averageProcessingTime = Duration.ofSeconds(1)),
-                Duration.ofSeconds(10), 16
+                3, 16
             )
         }
         val adapters = windows.map { paymentLoadManager ->
@@ -164,10 +172,10 @@ class PaymentLoadManagerTest {
                 }
             }
         }
-        val service = PaymentSystemImpl(adapters, Duration.ofSeconds(10))
-        service.reservePayment(System.currentTimeMillis() + 13_000).close()
+        val service = PaymentSystemImpl(adapters, 3)
+        service.reservePayment(System.currentTimeMillis() + 4_000).close()
         assertThrows(RejectedExecutionException::class.java) {
-            service.reservePayment(System.currentTimeMillis() + 11_500)
+            service.reservePayment(System.currentTimeMillis() + 2_500)
         }
     }
 }

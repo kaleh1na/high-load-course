@@ -21,7 +21,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
-    deadlineReserveTime: Duration,
+    deadlineReserveDivisor: Int,
     workerCount: Int,
 ) : PaymentExternalSystemAdapter {
 
@@ -41,7 +41,7 @@ class PaymentExternalSystemAdapterImpl(
     private val client = OkHttpClient.Builder().build()
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val ongoingWindow = OngoingWindow(parallelRequests)
-    private val paymentLoadManager = PaymentLoadManager(properties, deadlineReserveTime, workerCount)
+    private val paymentLoadManager = PaymentLoadManager(properties, deadlineReserveDivisor, workerCount)
 
     override fun tryReservePayment(deadline: Long) = paymentLoadManager.tryReserve(deadline)
         ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")

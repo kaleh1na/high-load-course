@@ -17,7 +17,7 @@ import kotlin.concurrent.withLock
 @Service
 class PaymentSystemImpl(
     private val paymentAccounts: List<PaymentExternalSystemAdapter>,
-    @Value("\${payment.deadline-reserve-time}") private val deadlineReserveTime: Duration
+    @Value("\${payment.deadline-reserve-divisor}") private val deadlineReserveDivisor: Int
 ) : PaymentService {
     companion object {
         val logger = LoggerFactory.getLogger(PaymentSystemImpl::class.java)
@@ -31,7 +31,9 @@ class PaymentSystemImpl(
             }
             val estimatedMillis = reservations.sumOf { it.estimatedMillis }
             val retryAfter = reservations.maxOfOrNull { it.retryAfter } ?: Duration.ZERO
-            if (estimatedMillis + deadlineReserveTime.toMillis() > deadline.toDouble() - now()) {
+            val remainingMillis = deadline.toDouble() - now()
+            val deadlineReserveTime = remainingMillis / deadlineReserveDivisor
+            if (estimatedMillis + deadlineReserveTime > remainingMillis) {
                 throw PaymentRejectedException(retryAfter, "Payment cannot meet its deadline")
             }
             return PaymentReservation(estimatedMillis, retryAfter) {

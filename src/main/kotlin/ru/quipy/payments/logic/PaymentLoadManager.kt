@@ -7,7 +7,7 @@ import kotlin.math.ceil
 
 class PaymentLoadManager(
     properties: PaymentAccountProperties,
-    private val deadlineReserveTime: Duration,
+    private val deadlineReserveDivisor: Int,
     workerCount: Int,
     private val clock: Clock = Clock.systemUTC()
 ) {
@@ -28,7 +28,9 @@ class PaymentLoadManager(
     fun tryReserve(deadline: Long): PaymentReservation? = synchronized(lock) {
         val waiting = pending - processing
         val estimatedMillis = waiting * MILLIS_PER_SECOND / throughput + processingMillis
-        if (estimatedMillis + deadlineReserveTime.toMillis() > deadline.toDouble() - clock.millis()) {
+        val remainingMillis = deadline.toDouble() - clock.millis()
+        val deadlineReserveTime = remainingMillis / deadlineReserveDivisor
+        if (estimatedMillis + deadlineReserveTime > remainingMillis) {
             return@synchronized null
         }
         pending++
