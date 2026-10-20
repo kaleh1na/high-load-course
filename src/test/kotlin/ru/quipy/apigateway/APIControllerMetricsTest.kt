@@ -16,9 +16,9 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
+import ru.quipy.payments.logic.PaymentRejectedException
 import java.time.Duration
 import java.util.UUID
-import java.util.concurrent.RejectedExecutionException
 
 class APIControllerMetricsTest {
     private lateinit var registry: PrometheusMeterRegistry
@@ -29,7 +29,7 @@ class APIControllerMetricsTest {
     @BeforeEach
     fun setUp() {
         registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
-        controller = APIController(registry, Duration.ofMillis(1500))
+        controller = APIController(registry)
         orderRepository = OrderRepository()
         orderPayer = mock(OrderPayer::class.java)
         ReflectionTestUtils.setField(controller, "orderRepository", orderRepository)
@@ -61,7 +61,9 @@ class APIControllerMetricsTest {
     @Test
     fun `overload returns 429 with retry timestamp without changing the order`() {
         val order = existingOrder()
-        val overloadedPayer = mock(OrderPayer::class.java) { throw RejectedExecutionException("Busy") }
+        val overloadedPayer = mock(OrderPayer::class.java) {
+            throw PaymentRejectedException(Duration.ofMillis(980), "Busy")
+        }
         ReflectionTestUtils.setField(controller, "orderPayer", overloadedPayer)
         val mvc = MockMvcBuilders.standaloneSetup(controller).build()
         val before = System.currentTimeMillis()
@@ -72,8 +74,8 @@ class APIControllerMetricsTest {
             .andReturn().response
 
         val retryAfter = response.getHeader("Retry-After")!!.toLong()
-        assertTrue(retryAfter >= before + 1500)
-        assertTrue(retryAfter <= System.currentTimeMillis() + 1500)
+        assertTrue(retryAfter >= before + 980)
+        assertTrue(retryAfter <= System.currentTimeMillis() + 980)
         assertEquals("", response.contentAsString)
         assertEquals(APIController.OrderStatus.COLLECTING, orderRepository.findById(order.id)!!.status)
         assertCount("accepted", 0.0)

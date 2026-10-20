@@ -5,22 +5,17 @@ import io.micrometer.core.instrument.MeterRegistry
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.http.HttpHeaders
 import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.*
 import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.logic.OrderPayer
+import ru.quipy.payments.logic.PaymentRejectedException
 import java.util.*
-import java.time.Duration
-import java.util.concurrent.RejectedExecutionException
 
 @RestController
-class APIController(
-    registry: MeterRegistry,
-    @Value("\${payment.retry-after}") private val retryAfter: Duration
-) {
+class APIController(registry: MeterRegistry) {
 
     private val acceptedPaymentRequests = Counter.builder("incoming_payment_requests")
         .description("Payment requests accepted for processing or rejected due to overload")
@@ -83,10 +78,10 @@ class APIController(
 
         val createdAt = try {
             orderPayer.processPayment(order, paymentId, deadline)
-        } catch (e: RejectedExecutionException) {
+        } catch (e: PaymentRejectedException) {
             rejectedPaymentRequests.increment()
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
-                .header(HttpHeaders.RETRY_AFTER, (System.currentTimeMillis() + retryAfter.toMillis()).toString())
+                .header(HttpHeaders.RETRY_AFTER, (System.currentTimeMillis() + e.retryAfter.toMillis()).toString())
                 .build()
         }
         acceptedPaymentRequests.increment()

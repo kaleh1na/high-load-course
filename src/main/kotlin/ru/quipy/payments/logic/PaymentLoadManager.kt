@@ -3,6 +3,7 @@ package ru.quipy.payments.logic
 import java.time.Clock
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.ceil
 
 class PaymentLoadManager(
     properties: PaymentAccountProperties,
@@ -22,6 +23,7 @@ class PaymentLoadManager(
         properties.rateLimitPerSec.toDouble(),
         minOf(properties.parallelRequests, workerCount) * MILLIS_PER_SECOND / processingMillis
     )
+    val retryAfter: Duration = Duration.ofMillis(ceil(MILLIS_PER_SECOND / throughput).toLong())
 
     fun tryReserve(deadline: Long): PaymentReservation? = synchronized(lock) {
         val waiting = pending - processing
@@ -30,7 +32,7 @@ class PaymentLoadManager(
             return@synchronized null
         }
         pending++
-        PaymentReservation(estimatedMillis) {
+        PaymentReservation(estimatedMillis, retryAfter) {
             synchronized(lock) {
                 pending--
             }
@@ -53,6 +55,7 @@ class PaymentLoadManager(
 
 class PaymentReservation(
     val estimatedMillis: Double,
+    val retryAfter: Duration,
     private val release: () -> Unit
 ) : AutoCloseable {
     private val released = AtomicBoolean()

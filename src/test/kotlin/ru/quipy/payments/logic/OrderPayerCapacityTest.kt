@@ -15,6 +15,7 @@ import ru.quipy.apigateway.APIController.Order
 import ru.quipy.apigateway.APIController.OrderStatus
 import ru.quipy.core.EventSourcingService
 import ru.quipy.orders.repository.OrderRepository
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
@@ -40,7 +41,7 @@ class OrderPayerCapacityTest {
         val rejectedOrder = repository.save(newOrder())
         val releases = AtomicInteger()
         `when`(service.reservePayment(Long.MAX_VALUE)).thenAnswer {
-            PaymentReservation(0.0) { releases.incrementAndGet() }
+            PaymentReservation(0.0, Duration.ofMillis(980)) { releases.incrementAndGet() }
         }
         ReflectionTestUtils.setField(payer, "paymentService", service)
         ReflectionTestUtils.setField(payer, "paymentESService", events)
@@ -61,9 +62,11 @@ class OrderPayerCapacityTest {
             val task = executor.queue.peek() as Future<*>
             assertEquals(0, releases.get())
 
-            assertThrows(RejectedExecutionException::class.java) {
+            val rejection = assertThrows(PaymentRejectedException::class.java) {
                 payer.processPayment(rejectedOrder, UUID.randomUUID(), Long.MAX_VALUE)
             }
+            assertEquals(Duration.ofMillis(980), rejection.retryAfter)
+            assertTrue(rejection.cause is RejectedExecutionException)
             assertEquals(rejectedOrder, repository.findById(rejectedOrder.id))
             assertEquals(1, releases.get())
             releaseWorker.countDown()
@@ -88,7 +91,8 @@ class OrderPayerCapacityTest {
         val service = mock(PaymentService::class.java)
         val repository = OrderRepository()
         val order = repository.save(newOrder())
-        `when`(service.reservePayment(Long.MAX_VALUE)).thenThrow(RejectedExecutionException("Deadline"))
+        `when`(service.reservePayment(Long.MAX_VALUE))
+            .thenThrow(PaymentRejectedException(Duration.ofMillis(980), "Deadline"))
         ReflectionTestUtils.setField(payer, "paymentService", service)
         ReflectionTestUtils.setField(payer, "orderRepository", repository)
         try {

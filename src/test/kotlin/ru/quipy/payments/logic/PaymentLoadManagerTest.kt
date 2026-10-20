@@ -3,6 +3,7 @@ package ru.quipy.payments.logic
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.mockito.ArgumentMatchers.anyLong
+import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.time.Clock
@@ -23,6 +24,7 @@ class PaymentLoadManagerTest {
     @Test
     fun `admission uses remaining deadline and configured margin and release is idempotent`() {
         val paymentLoadManager = PaymentLoadManager(account, Duration.ofSeconds(10), 16, clock)
+        assertEquals(Duration.ofMillis(980), paymentLoadManager.retryAfter)
         assertNull(paymentLoadManager.tryReserve(114_899))
         val reservation = paymentLoadManager.tryReserve(114_900)
         assertNotNull(reservation)
@@ -93,6 +95,7 @@ class PaymentLoadManagerTest {
             account.copy(rateLimitPerSec = 1, averageProcessingTime = Duration.ofMillis(100)),
             Duration.ZERO, 16, clock
         )
+        assertEquals(Duration.ofSeconds(1), slowRate.retryAfter)
         val first = slowRate.tryReserve(100_100)!!
         assertNull(slowRate.tryReserve(101_099))
         slowRate.tryReserve(101_100)!!.close()
@@ -102,10 +105,16 @@ class PaymentLoadManagerTest {
             account.copy(parallelRequests = 30, rateLimitPerSec = 100),
             Duration.ZERO, 4, clock
         )
+        assertEquals(Duration.ofMillis(1225), workerLimited.retryAfter)
         val pending = workerLimited.tryReserve(104_900)!!
         assertNull(workerLimited.tryReserve(106_124))
         workerLimited.tryReserve(106_125)!!.close()
         pending.close()
+        val fractionalRate = PaymentLoadManager(
+            account.copy(rateLimitPerSec = 3, averageProcessingTime = Duration.ofMillis(100)),
+            Duration.ZERO, 16, clock
+        )
+        assertEquals(Duration.ofMillis(334), fractionalRate.retryAfter)
     }
 
     @Test
@@ -114,21 +123,26 @@ class PaymentLoadManagerTest {
         val second = mock(PaymentExternalSystemAdapter::class.java)
         val releases = AtomicInteger()
         `when`(first.tryReservePayment(anyLong())).thenAnswer {
-            PaymentReservation(40_000.0) { releases.incrementAndGet() }
+            PaymentReservation(40_000.0, Duration.ofMillis(980)) { releases.incrementAndGet() }
         }
+        `when`(second.tryReservePayment(anyLong()))
+            .thenThrow(PaymentRejectedException(Duration.ofSeconds(2), "Deadline"))
         val service = PaymentSystemImpl(listOf(first, second), Duration.ofSeconds(10))
-        assertThrows(RejectedExecutionException::class.java) {
+        val accountRejection = assertThrows(PaymentRejectedException::class.java) {
             service.reservePayment(System.currentTimeMillis() + 60_000)
         }
+        assertEquals(Duration.ofSeconds(2), accountRejection.retryAfter)
         assertEquals(1, releases.get())
-        `when`(second.tryReservePayment(anyLong())).thenAnswer {
-            PaymentReservation(40_000.0) { releases.incrementAndGet() }
-        }
-        assertThrows(RejectedExecutionException::class.java) {
+        doAnswer {
+            PaymentReservation(40_000.0, Duration.ofSeconds(2)) { releases.incrementAndGet() }
+        }.`when`(second).tryReservePayment(anyLong())
+        val combinedRejection = assertThrows(PaymentRejectedException::class.java) {
             service.reservePayment(System.currentTimeMillis() + 60_000)
         }
+        assertEquals(Duration.ofSeconds(2), combinedRejection.retryAfter)
         assertEquals(3, releases.get())
         val reservation = service.reservePayment(System.currentTimeMillis() + 120_000)
+        assertEquals(Duration.ofSeconds(2), reservation.retryAfter)
         reservation.close()
         reservation.close()
         assertEquals(5, releases.get())
@@ -146,6 +160,7 @@ class PaymentLoadManagerTest {
             mock(PaymentExternalSystemAdapter::class.java).also { adapter ->
                 `when`(adapter.tryReservePayment(anyLong())).thenAnswer { invocation ->
                     paymentLoadManager.tryReserve(invocation.getArgument(0))
+                        ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Deadline")
                 }
             }
         }

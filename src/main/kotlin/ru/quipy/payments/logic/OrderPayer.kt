@@ -13,6 +13,7 @@ import ru.quipy.orders.repository.OrderRepository
 import ru.quipy.payments.api.PaymentAggregate
 import java.util.*
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
@@ -75,6 +76,9 @@ class OrderPayer(
                 }
             } finally {
                 reservation.close()
+            }
+            if (e is RejectedExecutionException) {
+                throw PaymentRejectedException(reservation.retryAfter, "Payment executor rejected the task", e)
             }
             throw e
         }

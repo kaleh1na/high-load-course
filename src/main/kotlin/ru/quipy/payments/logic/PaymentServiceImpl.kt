@@ -10,7 +10,6 @@ import ru.quipy.payments.api.PaymentAggregate
 import java.time.Duration
 import java.util.*
 import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -29,13 +28,13 @@ class PaymentSystemImpl(
         try {
             for (account in paymentAccounts) {
                 reservations += account.tryReservePayment(deadline)
-                    ?: throw RejectedExecutionException("Payment cannot meet its deadline")
             }
             val estimatedMillis = reservations.sumOf { it.estimatedMillis }
+            val retryAfter = reservations.maxOfOrNull { it.retryAfter } ?: Duration.ZERO
             if (estimatedMillis + deadlineReserveTime.toMillis() > deadline.toDouble() - now()) {
-                throw RejectedExecutionException("Payment cannot meet its deadline")
+                throw PaymentRejectedException(retryAfter, "Payment cannot meet its deadline")
             }
-            return PaymentReservation(estimatedMillis) {
+            return PaymentReservation(estimatedMillis, retryAfter) {
                 reservations.forEach { it.close() }
             }
         } catch (e: Throwable) {

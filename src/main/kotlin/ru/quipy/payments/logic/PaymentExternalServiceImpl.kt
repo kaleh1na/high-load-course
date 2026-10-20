@@ -44,6 +44,7 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentLoadManager = PaymentLoadManager(properties, deadlineReserveTime, workerCount)
 
     override fun tryReservePayment(deadline: Long) = paymentLoadManager.tryReserve(deadline)
+        ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val transactionId = UUID.randomUUID()
