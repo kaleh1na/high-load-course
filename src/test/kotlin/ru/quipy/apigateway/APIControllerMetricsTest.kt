@@ -42,7 +42,7 @@ class APIControllerMetricsTest {
     }
 
     @Test
-    fun `accepted payment returns 200 and updates order and counter`() {
+    fun `accepted payment returns 200 and updates counter without saving order in controller`() {
         val order = existingOrder()
         val mvc = MockMvcBuilders.standaloneSetup(controller).build()
 
@@ -53,7 +53,7 @@ class APIControllerMetricsTest {
             .andExpect(jsonPath("$.transactionId").isString)
             .andExpect(header().doesNotExist("Retry-After"))
 
-        assertEquals(APIController.OrderStatus.PAYMENT_IN_PROGRESS, orderRepository.findById(order.id)!!.status)
+        assertEquals(order, orderRepository.findById(order.id))
         assertCount("accepted", 1.0)
         assertCount("rejected", 0.0)
     }

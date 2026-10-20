@@ -4,6 +4,8 @@ import java.time.Duration
 import java.util.*
 
 interface PaymentService {
+    fun reservePayment(deadline: Long): PaymentReservation
+
     /**
      * Submit payment request to some external service.
      */
@@ -17,6 +19,8 @@ interface PaymentService {
 
  */
 interface PaymentExternalSystemAdapter {
+    fun tryReservePayment(deadline: Long): PaymentReservation?
+
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun name(): String

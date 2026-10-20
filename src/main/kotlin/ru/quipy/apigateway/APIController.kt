@@ -82,14 +82,13 @@ class APIController(
             ?: throw IllegalArgumentException("No such order $orderId")
 
         val createdAt = try {
-            orderPayer.processPayment(orderId, order.price, paymentId, deadline)
+            orderPayer.processPayment(order, paymentId, deadline)
         } catch (e: RejectedExecutionException) {
             rejectedPaymentRequests.increment()
             return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header(HttpHeaders.RETRY_AFTER, (System.currentTimeMillis() + retryAfter.toMillis()).toString())
                 .build()
         }
-        orderRepository.save(order.copy(status = OrderStatus.PAYMENT_IN_PROGRESS))
         acceptedPaymentRequests.increment()
         return ResponseEntity.ok(PaymentSubmissionDto(createdAt, paymentId))
     }
