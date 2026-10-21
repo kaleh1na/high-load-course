@@ -2156,6 +2156,64 @@
           ],
           "title": "(Test system -> Online shop)  Average request latent time (before submit)",
           "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "description": "Estimated p95 and p99 over 5 minutes, per account. Includes HTTP calls and response body reading, including failed calls; excludes queueing and rate limiter waits.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 28
+          },
+          "id": 103,
+          "options": {
+            "legend": {
+              "calcs": ["lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "{{service}} / {{account}} — p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "{{service}} / {{account}} — p99",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Payment provider duration (p95 / p99)",
+          "type": "timeseries"
         }
       ],
       "title": "Http calls info",

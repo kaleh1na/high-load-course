@@ -3,9 +3,13 @@ package ru.quipy.payments.config
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.context.properties.bind.Bindable
+import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.env.Environment
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import ru.quipy.payments.logic.*
@@ -13,6 +17,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.time.Duration
 import java.util.*
 
 
@@ -38,9 +43,16 @@ class PaymentAccountsConfig {
     @Bean
     fun accountAdapters(
         paymentService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
-        @Value("\${payment.worker-count}") workerCount: Int,
-        @Value("\${payment.deadline-reserve-divisor}") deadlineReserveDivisor: Int
+        registry: MeterRegistry,
+        environment: Environment,
+        @Value("\${payment.worker-count}") workerCount: Int
     ): List<PaymentExternalSystemAdapter> {
+        val accountsP99 = Binder.get(environment)
+            .bind("payment.accounts-p99", Bindable.mapOf(String::class.java, Duration::class.java))
+            .orElse(emptyMap())
+        allowedAccounts.forEach { account ->
+            require(account in accountsP99) { "Missing payment.accounts-p99.$account" }
+        }
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -62,8 +74,9 @@ class PaymentAccountsConfig {
                     paymentService,
                     paymentProviderHostPort,
                     token,
-                    deadlineReserveDivisor,
-                    workerCount
+                    accountsP99.getValue(it.accountName),
+                    workerCount,
+                    registry
                 )
             }
     }
