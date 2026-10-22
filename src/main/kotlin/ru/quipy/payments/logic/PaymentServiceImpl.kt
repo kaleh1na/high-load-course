@@ -21,6 +21,27 @@ class PaymentSystemImpl(
         val logger = LoggerFactory.getLogger(PaymentSystemImpl::class.java)
     }
 
+    override fun reservePayment(deadline: Long): PaymentReservation {
+        val reservations = mutableListOf<PaymentReservation>()
+        try {
+            for (account in paymentAccounts) {
+                reservations += account.tryReservePayment(deadline)
+            }
+            val estimatedMillis = reservations.sumOf { it.estimatedMillis }
+            val retryAfter = reservations.maxOfOrNull { it.retryAfter } ?: Duration.ZERO
+            val remainingMillis = deadline.toDouble() - now()
+            if (estimatedMillis > remainingMillis) {
+                throw PaymentRejectedException(retryAfter, "Payment cannot meet its deadline")
+            }
+            return PaymentReservation(estimatedMillis, retryAfter) {
+                reservations.forEach { it.close() }
+            }
+        } catch (e: Throwable) {
+            reservations.forEach { it.close() }
+            throw e
+        }
+    }
+
     override fun submitPaymentRequest(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         for (account in paymentAccounts) {
             account.performPaymentAsync(paymentId, amount, paymentStartedAt, deadline)

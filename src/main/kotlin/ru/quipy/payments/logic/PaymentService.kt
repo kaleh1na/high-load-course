@@ -2,8 +2,11 @@ package ru.quipy.payments.logic
 
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.RejectedExecutionException
 
 interface PaymentService {
+    fun reservePayment(deadline: Long): PaymentReservation
+
     /**
      * Submit payment request to some external service.
      */
@@ -17,6 +20,8 @@ interface PaymentService {
 
  */
 interface PaymentExternalSystemAdapter {
+    fun tryReservePayment(deadline: Long): PaymentReservation
+
     fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long)
 
     fun name(): String
@@ -48,3 +53,9 @@ class ExternalSysResponse(
     val result: Boolean,
     val message: String? = null,
 )
+
+class PaymentRejectedException(
+    val retryAfter: Duration,
+    message: String,
+    cause: Throwable? = null
+) : RejectedExecutionException(message, cause)
