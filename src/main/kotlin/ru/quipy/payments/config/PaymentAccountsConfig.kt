@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import io.micrometer.core.instrument.MeterRegistry
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.context.properties.bind.Bindable
 import org.springframework.boot.context.properties.bind.Binder
@@ -24,6 +25,7 @@ import java.util.*
 @Configuration
 class PaymentAccountsConfig {
     companion object {
+        private val logger = LoggerFactory.getLogger(PaymentAccountsConfig::class.java)
         private val javaClient = HttpClient.newBuilder().build()
         private val mapper = ObjectMapper().registerKotlinModule().registerModules(JavaTimeModule())
     }
@@ -50,9 +52,6 @@ class PaymentAccountsConfig {
         val accountsP99 = Binder.get(environment)
             .bind("payment.accounts-p99", Bindable.mapOf(String::class.java, Duration::class.java))
             .orElse(emptyMap())
-        allowedAccounts.forEach { account ->
-            require(account in accountsP99) { "Missing payment.accounts-p99.$account" }
-        }
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -69,12 +68,15 @@ class PaymentAccountsConfig {
             .map { it.copy(enabled = true) }
             .onEach(::println)
             .map {
+                val processingP99 = accountsP99[it.accountName] ?: it.averageProcessingTime.also { average ->
+                    logger.warn("Missing p99 for account {}: using average processing time {}. Deadline estimates may be optimistic.", it.accountName, average)
+                }
                 PaymentExternalSystemAdapterImpl(
                     it,
                     paymentService,
                     paymentProviderHostPort,
                     token,
-                    accountsP99.getValue(it.accountName),
+                    processingP99,
                     workerCount,
                     registry
                 )
