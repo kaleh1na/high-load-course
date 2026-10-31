@@ -2,6 +2,8 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
@@ -21,6 +23,9 @@ class PaymentExternalSystemAdapterImpl(
     private val paymentESService: EventSourcingService<UUID, PaymentAggregate, PaymentAggregateState>,
     private val paymentProviderHostPort: String,
     private val token: String,
+    processingP99: Duration,
+    workerCount: Int,
+    private val registry: MeterRegistry,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -39,6 +44,15 @@ class PaymentExternalSystemAdapterImpl(
     private val client = OkHttpClient.Builder().build()
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val ongoingWindow = OngoingWindow(parallelRequests)
+    private val paymentLoadManager = PaymentLoadManager(properties, processingP99, workerCount)
+    private val requestDuration = Timer.builder("payment_provider_request_duration")
+        .description("Payment provider HTTP request duration including response body reading")
+        .tags("service", serviceName, "account", accountName)
+        .publishPercentileHistogram()
+        .register(registry)
+
+    override fun tryReservePayment(deadline: Long) = paymentLoadManager.tryReserve(deadline)
+        ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val transactionId = UUID.randomUUID()
@@ -62,11 +76,19 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
-            client.newCall(request).execute().use { response ->
+            paymentLoadManager.processing {
+                val sample = Timer.start(registry)
+                val (responseCode, responseBody) = try {
+                    client.newCall(request).execute().use { response ->
+                        response.code to response.body?.string()
+                    }
+                } finally {
+                    sample.stop(requestDuration)
+                }
                 val body = try {
-                    mapper.readValue(response.body?.string(), ExternalSysResponse::class.java)
+                    mapper.readValue(responseBody, ExternalSysResponse::class.java)
                 } catch (e: Exception) {
-                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: ${response.code}, reason: ${response.body?.string()}")
+                    logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: $responseCode, reason: $responseBody")
                     ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
                 }
 

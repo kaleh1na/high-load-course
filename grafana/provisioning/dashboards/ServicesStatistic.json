@@ -1661,6 +1661,70 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
+          "description": "Принятые и отклонённые из-за перегрузки запросы на оплату в секунду, среднее за 30 секунд. Источник — локальный магазин на порту 8081. У метрики пока нет метки service, поэтому переключатель service на эту панель не влияет. Ошибки до приёма оплаты не учитываются.",
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 0,
+                "lineWidth": 2,
+                "showPoints": "never",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                }
+              },
+              "min": 0,
+              "unit": "reqps"
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 12
+          },
+          "id": 102,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "PBFA97CFB590B2093"
+              },
+              "editorMode": "code",
+              "expr": "sum by (status) (rate(incoming_payment_requests_total{job=\"online-store-job\"}[30s]))",
+              "legendFormat": "{{status}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Incoming payment requests (RPS)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
           "fieldConfig": {
             "defaults": {
               "color": {
@@ -1754,8 +1818,8 @@
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 0,
-            "y": 100
+            "x": 12,
+            "y": 12
           },
           "id": 32,
           "options": {
@@ -1783,10 +1847,10 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "rate(external_sys_duration_count{service=~\"$service\"}[30s])",
+              "expr": "rate(external_sys_duration_count{service=~\"$service\",job=\"bombardier-docker-network-job\"}[30s])",
               "hide": false,
               "interval": "",
-              "legendFormat": "{{accountName}} - {{outcome}}",
+              "legendFormat": "{{service}} - {{accountName}} - {{outcome}}",
               "range": true,
               "refId": "C"
             }
@@ -1892,8 +1956,8 @@
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 100
+            "x": 0,
+            "y": 20
           },
           "id": 34,
           "options": {
@@ -2055,7 +2119,7 @@
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 108
+            "y": 20
           },
           "id": 43,
           "options": {
@@ -2091,6 +2155,64 @@
             }
           ],
           "title": "(Test system -> Online shop)  Average request latent time (before submit)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "description": "Estimated p95 and p99 over 5 minutes, per account. Includes HTTP calls and response body reading, including failed calls; excludes queueing and rate limiter waits.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 28
+          },
+          "id": 103,
+          "options": {
+            "legend": {
+              "calcs": ["lastNotNull"],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "{{service}} / {{account}} — p95",
+              "range": true,
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "legendFormat": "{{service}} / {{account}} — p99",
+              "range": true,
+              "refId": "B"
+            }
+          ],
+          "title": "Payment provider duration (p95 / p99)",
           "type": "timeseries"
         }
       ],
