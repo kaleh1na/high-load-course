@@ -1,53 +1,36 @@
 package ru.quipy.common.utils
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.asCoroutineDispatcher
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
-import java.util.concurrent.Executors
+import java.time.Duration
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
+import kotlin.math.ceil
 
 class TokenBucketRateLimiter(
-    private val rate: Int,
+    rate: Int,
     private val bucketMaxCapacity: Int,
-    private val window: Long,
-    private val timeUnit: TimeUnit = TimeUnit.MINUTES,
-): RateLimiter {
-    companion object {
-        private val logger: Logger = LoggerFactory.getLogger(TokenBucketRateLimiter::class.java)
+    window: Long,
+    timeUnit: TimeUnit = TimeUnit.MINUTES,
+    private val nanoTime: () -> Long = System::nanoTime,
+) : RateLimiter {
+    init {
+        require(rate > 0 && bucketMaxCapacity > 0 && window > 0)
     }
 
-    private val rateLimiterScope = CoroutineScope(Executors.newSingleThreadExecutor().asCoroutineDispatcher())
+    private val nanosPerToken = timeUnit.toNanos(window).toDouble() / rate
+    private var tokens = bucketMaxCapacity.toDouble()
+    private var lastUpdate = nanoTime()
 
-    private var bucket: AtomicInteger = AtomicInteger(0)
-    private var start = System.currentTimeMillis()
-    private var nextExpectedWakeUp = start + timeUnit.toMillis(window)
-
-    private val releaseJob = rateLimiterScope.launch {
-        while (true) {
-            start = System.currentTimeMillis()
-            nextExpectedWakeUp = start + timeUnit.toMillis(window)
-
-            bucket.get().let { cur ->
-                bucket.addAndGet(if (cur + rate > bucketMaxCapacity) bucketMaxCapacity - cur else rate)
-            }
-            delay(nextExpectedWakeUp - System.currentTimeMillis())
+    @Synchronized
+    fun tryAcquire(): Duration? {
+        val now = nanoTime()
+        tokens = minOf(bucketMaxCapacity.toDouble(), tokens + (now - lastUpdate) / nanosPerToken)
+        lastUpdate = now
+        if (tokens < 1.0) {
+            val waitMillis = ceil((1.0 - tokens) * nanosPerToken / 1_000_000).toLong()
+            return Duration.ofMillis(waitMillis)
         }
-    }.invokeOnCompletion { th -> if (th != null) logger.error("Rate limiter release job completed", th) }
-
-    override fun tick(): Boolean {
-        while (true) {
-            val tokensAvailable = bucket.get()
-            if (tokensAvailable <= 0) {
-                return false
-            }
-            val res = bucket.compareAndSet(tokensAvailable, tokensAvailable - 1)
-            if (res) {
-                return true
-            }
-        }
+        tokens -= 1.0
+        return null
     }
+
+    override fun tick() = tryAcquire() == null
 }
