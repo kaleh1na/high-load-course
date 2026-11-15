@@ -28,7 +28,7 @@ class PaymentExternalSystemAdapterImpl(
     processingP99: Duration,
     workerCount: Int,
     private val registry: MeterRegistry,
-    admissionBurst: Int? = null,
+    private val admissionBurst: Int? = null,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -48,6 +48,8 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val ongoingWindow = OngoingWindow(parallelRequests)
     private val paymentLoadManager = PaymentLoadManager(properties, processingP99, workerCount)
+    // Keep the short-deadline burst; bank extra permits only for time beyond this reserve.
+    private val admissionReserveMillis = maxOf(2_500L, processingP99.toMillis())
     private val admissionLimiter = admissionBurst?.let {
         TokenBucketRateLimiter(rateLimitPerSec, it, 1, TimeUnit.SECONDS)
     }
@@ -60,7 +62,11 @@ class PaymentExternalSystemAdapterImpl(
     override fun tryReservePayment(deadline: Long): PaymentReservation {
         val reservation = paymentLoadManager.tryReserve(deadline)
             ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")
-        val delay = admissionLimiter?.tryAcquire()
+        val delay = admissionBurst?.let { baseBurst ->
+            val extraMillis = (deadline - now() - admissionReserveMillis).coerceAtLeast(0)
+            val capacity = (baseBurst + extraMillis / 1000.0 * rateLimitPerSec).toInt()
+            admissionLimiter?.tryAcquire(capacity)
+        }
         if (delay != null) {
             reservation.close()
             throw PaymentRejectedException(delay, "Payment admission rate exceeded")

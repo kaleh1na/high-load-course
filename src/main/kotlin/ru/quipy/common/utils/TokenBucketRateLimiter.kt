@@ -20,9 +20,10 @@ class TokenBucketRateLimiter(
     private var lastUpdate = nanoTime()
 
     @Synchronized
-    fun tryAcquire(): Duration? {
+    fun tryAcquire(capacity: Int = bucketMaxCapacity): Duration? {
+        require(capacity > 0)
         val now = nanoTime()
-        tokens = minOf(bucketMaxCapacity.toDouble(), tokens + (now - lastUpdate) / nanosPerToken)
+        tokens = minOf(capacity.toDouble(), tokens + (now - lastUpdate) / nanosPerToken)
         lastUpdate = now
         if (tokens < 1.0) {
             val waitMillis = ceil((1.0 - tokens) * nanosPerToken / 1_000_000).toLong()
