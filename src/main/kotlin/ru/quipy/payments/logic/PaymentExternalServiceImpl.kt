@@ -79,8 +79,6 @@ class PaymentExternalSystemAdapterImpl(
 
         ongoingWindow.acquire()
         try {
-            rateLimiter.tickBlocking()
-
             logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
             // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
@@ -96,6 +94,7 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
+            rateLimiter.tickBlocking()
             paymentLoadManager.processing {
                 val sample = Timer.start(registry)
                 val (responseCode, responseBody) = try {
