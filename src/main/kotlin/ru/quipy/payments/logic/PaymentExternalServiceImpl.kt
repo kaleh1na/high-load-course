@@ -30,7 +30,7 @@ class PaymentExternalSystemAdapterImpl(
     private val registry: MeterRegistry,
     private val admissionBurst: Int? = null,
     private val maxAttempts: Int = 4,
-    private val retryInitialDelay: Duration = Duration.ofMillis(20),
+    private val retryInitialDelay: Duration = Duration.ofMillis(5),
     private val retryMultiplier: Double = 2.0,
 ) : PaymentExternalSystemAdapter {
 
