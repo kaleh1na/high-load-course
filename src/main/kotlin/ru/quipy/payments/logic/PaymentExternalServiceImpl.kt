@@ -30,7 +30,7 @@ class PaymentExternalSystemAdapterImpl(
     private val registry: MeterRegistry,
     private val admissionBurst: Int? = null,
     private val maxAttempts: Int = 4,
-    private val retryInitialDelay: Duration = Duration.ofMillis(100),
+    private val retryInitialDelay: Duration = Duration.ofMillis(20),
     private val retryMultiplier: Double = 2.0,
 ) : PaymentExternalSystemAdapter {
 
@@ -45,7 +45,6 @@ class PaymentExternalSystemAdapterImpl(
 
     private val serviceName = properties.serviceName
     private val accountName = properties.accountName
-    private val requestAverageProcessingTime = properties.averageProcessingTime
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
@@ -135,7 +134,7 @@ class PaymentExternalSystemAdapterImpl(
                 attempt++
                 if (succeeded) break
                 if (attempt >= maxAttempts || !isRetryable(responseCode, body)) break
-                if (retryDelayMillis > deadline - now() - requestAverageProcessingTime.toMillis()) break
+                if (retryDelayMillis >= deadline - now()) break
                 if (retryDelayMillis > 0) Thread.sleep(retryDelayMillis)
                 retryDelayMillis = (retryDelayMillis * retryMultiplier).toLong()
             } while (true)
