@@ -29,6 +29,9 @@ class PaymentExternalSystemAdapterImpl(
     workerCount: Int,
     private val registry: MeterRegistry,
     private val admissionBurst: Int? = null,
+    private val maxAttempts: Int = 4,
+    private val retryInitialDelay: Duration = Duration.ofMillis(100),
+    private val retryMultiplier: Double = 2.0,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -94,30 +97,55 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
-            rateLimiter.tickBlocking()
-            paymentLoadManager.processing {
-                val sample = Timer.start(registry)
-                val (responseCode, responseBody) = try {
-                    client.newCall(request).execute().use { response ->
-                        response.code to response.body?.string()
-                    }
-                } finally {
-                    sample.stop(requestDuration)
+            var attempt = 0
+            var retryDelayMillis = retryInitialDelay.toMillis()
+            var body: ExternalSysResponse
+            var succeeded: Boolean
+            do {
+                if (!rateLimiter.tickBlocking(deadline)) {
+                    throw SocketTimeoutException("Payment deadline exceeded")
                 }
-                val body = try {
+                val remainingMillis = deadline - now()
+                if (remainingMillis <= 0) {
+                    throw SocketTimeoutException("Payment deadline exceeded")
+                }
+                val attemptRequest = request.newBuilder()
+                    .url(request.url.newBuilder()
+                        .addQueryParameter("timeout", Duration.ofMillis(remainingMillis).toString())
+                        .build())
+                    .build()
+                val (responseCode, responseBody) = paymentLoadManager.processing {
+                    val call = client.newCall(attemptRequest)
+                    call.timeout().timeout(remainingMillis, TimeUnit.MILLISECONDS)
+                    val sample = Timer.start(registry)
+                    try {
+                        call.execute().use { response ->
+                            response.code to response.body?.string()
+                        }
+                    } finally {
+                        sample.stop(requestDuration)
+                    }
+                }
+                body = try {
                     mapper.readValue(responseBody, ExternalSysResponse::class.java)
                 } catch (e: Exception) {
                     logger.error("[$accountName] [ERROR] Payment processed for txId: $transactionId, payment: $paymentId, result code: $responseCode, reason: $responseBody")
                     ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
                 }
 
-                logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: ${body.result}, message: ${body.message}")
+                succeeded = responseCode in 200..299 && body.result
+                logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: $succeeded, message: ${body.message}")
+                attempt++
+                if (succeeded || attempt >= maxAttempts || responseCode != 200 || body.message != "Temporary error") break
+                if (retryDelayMillis > deadline - now() - requestAverageProcessingTime.toMillis()) break
+                if (retryDelayMillis > 0) Thread.sleep(retryDelayMillis)
+                retryDelayMillis = (retryDelayMillis * retryMultiplier).toLong()
+            } while (true)
 
-                // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
-                // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
-                paymentESService.update(paymentId) {
-                    it.logProcessing(body.result, now(), transactionId, reason = body.message)
-                }
+            // Здесь мы обновляем состояние оплаты в зависимости от результата в базе данных оплат.
+            // Это требуется сделать ВО ВСЕХ ИСХОДАХ (успешная оплата / неуспешная / ошибочная ситуация)
+            paymentESService.update(paymentId) {
+                it.logProcessing(succeeded, now(), transactionId, reason = body.message)
             }
         } catch (e: Exception) {
             when (e) {

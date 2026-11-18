@@ -55,6 +55,9 @@ class PaymentAccountsConfig {
         val admissionBursts = Binder.get(environment)
             .bind("payment.admission-burst", Bindable.mapOf(String::class.java, Int::class.javaObjectType))
             .orElse(emptyMap())
+        val maxAttempts = environment.getProperty("payment.retry.max-attempts", Int::class.javaObjectType, 4)
+        val retryInitialDelay = environment.getProperty("payment.retry.initial-delay", Duration::class.java, Duration.ofMillis(100))
+        val retryMultiplier = environment.getProperty("payment.retry.multiplier", Double::class.javaObjectType, 2.0)
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -82,7 +85,10 @@ class PaymentAccountsConfig {
                     processingP99,
                     workerCount,
                     registry,
-                    admissionBursts[it.accountName]
+                    admissionBursts[it.accountName],
+                    maxAttempts,
+                    retryInitialDelay,
+                    retryMultiplier
                 )
             }
     }
