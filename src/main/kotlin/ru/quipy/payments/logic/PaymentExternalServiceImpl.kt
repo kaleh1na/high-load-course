@@ -130,7 +130,7 @@ class PaymentExternalSystemAdapterImpl(
                     ExternalSysResponse(transactionId.toString(), paymentId.toString(),false, e.message)
                 }
 
-                succeeded = responseCode in 200..299 && body.result
+                succeeded = body.result
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: $succeeded, message: ${body.message}")
                 attempt++
                 if (succeeded) break
