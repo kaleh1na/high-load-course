@@ -35,6 +35,8 @@ class PaymentExternalSystemAdapterImpl(
 ) : PaymentExternalSystemAdapter {
 
     companion object {
+        private val retryableErrorMessages = setOf("Temporary error")
+
         val logger = LoggerFactory.getLogger(PaymentExternalSystemAdapter::class.java)
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
@@ -136,7 +138,7 @@ class PaymentExternalSystemAdapterImpl(
                 succeeded = responseCode in 200..299 && body.result
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: $succeeded, message: ${body.message}")
                 attempt++
-                if (succeeded || attempt >= maxAttempts || responseCode != 200 || body.message != "Temporary error") break
+                if (attempt >= maxAttempts || !isRetryable(responseCode, body)) break
                 if (retryDelayMillis > deadline - now() - requestAverageProcessingTime.toMillis()) break
                 if (retryDelayMillis > 0) Thread.sleep(retryDelayMillis)
                 retryDelayMillis = (retryDelayMillis * retryMultiplier).toLong()
@@ -168,6 +170,9 @@ class PaymentExternalSystemAdapterImpl(
             ongoingWindow.release()
         }
     }
+
+    private fun isRetryable(responseCode: Int, body: ExternalSysResponse): Boolean =
+        responseCode == 200 && !body.result && body.message in retryableErrorMessages
 
     override fun price() = properties.price
 
