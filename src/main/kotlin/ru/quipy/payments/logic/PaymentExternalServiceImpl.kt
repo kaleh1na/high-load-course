@@ -111,13 +111,8 @@ class PaymentExternalSystemAdapterImpl(
                 if (remainingMillis <= 0) {
                     throw SocketTimeoutException("Payment deadline exceeded")
                 }
-                val attemptRequest = request.newBuilder()
-                    .url(request.url.newBuilder()
-                        .addQueryParameter("timeout", Duration.ofMillis(remainingMillis).toString())
-                        .build())
-                    .build()
                 val (responseCode, responseBody) = paymentLoadManager.processing {
-                    val call = client.newCall(attemptRequest)
+                    val call = client.newCall(request)
                     call.timeout().timeout(remainingMillis, TimeUnit.MILLISECONDS)
                     val sample = Timer.start(registry)
                     try {
@@ -138,6 +133,7 @@ class PaymentExternalSystemAdapterImpl(
                 succeeded = responseCode in 200..299 && body.result
                 logger.warn("[$accountName] Payment processed for txId: $transactionId, payment: $paymentId, succeeded: $succeeded, message: ${body.message}")
                 attempt++
+                if (succeeded) break
                 if (attempt >= maxAttempts || !isRetryable(responseCode, body)) break
                 if (retryDelayMillis > deadline - now() - requestAverageProcessingTime.toMillis()) break
                 if (retryDelayMillis > 0) Thread.sleep(retryDelayMillis)
