@@ -55,6 +55,9 @@ class PaymentAccountsConfig {
         val admissionBursts = Binder.get(environment)
             .bind("payment.admission-burst", Bindable.mapOf(String::class.java, Int::class.javaObjectType))
             .orElse(emptyMap())
+        val callTimeouts = Binder.get(environment)
+            .bind("payment.call-timeout", Bindable.mapOf(String::class.java, Duration::class.java))
+            .orElse(emptyMap())
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -82,7 +85,8 @@ class PaymentAccountsConfig {
                     processingP99,
                     workerCount,
                     registry,
-                    admissionBursts[it.accountName]
+                    admissionBurst = admissionBursts[it.accountName],
+                    callTimeout = callTimeouts[it.accountName]
                 )
             }
     }
