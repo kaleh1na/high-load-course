@@ -10,11 +10,13 @@ import okhttp3.RequestBody
 import org.slf4j.LoggerFactory
 import ru.quipy.common.utils.OngoingWindow
 import ru.quipy.common.utils.SlidingWindowRateLimiter
+import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
+import java.util.concurrent.TimeUnit
 
 
 // Advice: always treat time as a Duration
@@ -26,6 +28,7 @@ class PaymentExternalSystemAdapterImpl(
     processingP99: Duration,
     workerCount: Int,
     private val registry: MeterRegistry,
+    private val admissionBurst: Int? = null,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -45,22 +48,37 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val ongoingWindow = OngoingWindow(parallelRequests)
     private val paymentLoadManager = PaymentLoadManager(properties, processingP99, workerCount)
+    // Keep the short-deadline burst; bank extra permits only for time beyond this reserve.
+    private val admissionReserveMillis = maxOf(2_500L, processingP99.toMillis())
+    private val admissionLimiter = admissionBurst?.let {
+        TokenBucketRateLimiter(rateLimitPerSec, it, 1, TimeUnit.SECONDS)
+    }
     private val requestDuration = Timer.builder("payment_provider_request_duration")
         .description("Payment provider HTTP request duration including response body reading")
         .tags("service", serviceName, "account", accountName)
         .publishPercentileHistogram()
         .register(registry)
 
-    override fun tryReservePayment(deadline: Long) = paymentLoadManager.tryReserve(deadline)
-        ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")
+    override fun tryReservePayment(deadline: Long): PaymentReservation {
+        val reservation = paymentLoadManager.tryReserve(deadline)
+            ?: throw PaymentRejectedException(paymentLoadManager.retryAfter, "Payment cannot meet its deadline")
+        val delay = admissionBurst?.let { baseBurst ->
+            val extraMillis = (deadline - now() - admissionReserveMillis).coerceAtLeast(0)
+            val capacity = (baseBurst + extraMillis / 1000.0 * rateLimitPerSec).toInt()
+            admissionLimiter?.tryAcquire(capacity)
+        }
+        if (delay != null) {
+            reservation.close()
+            throw PaymentRejectedException(delay, "Payment admission rate exceeded")
+        }
+        return reservation
+    }
 
     override fun performPaymentAsync(paymentId: UUID, amount: Int, paymentStartedAt: Long, deadline: Long) {
         val transactionId = UUID.randomUUID()
 
         ongoingWindow.acquire()
         try {
-            rateLimiter.tickBlocking()
-
             logger.warn("[$accountName] Submitting payment request for payment $paymentId")
 
             // Вне зависимости от исхода оплаты важно отметить что она была отправлена.
@@ -76,6 +94,7 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
+            rateLimiter.tickBlocking()
             paymentLoadManager.processing {
                 val sample = Timer.start(registry)
                 val (responseCode, responseBody) = try {

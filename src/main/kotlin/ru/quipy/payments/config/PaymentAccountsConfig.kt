@@ -52,6 +52,9 @@ class PaymentAccountsConfig {
         val accountsP99 = Binder.get(environment)
             .bind("payment.accounts-p99", Bindable.mapOf(String::class.java, Duration::class.java))
             .orElse(emptyMap())
+        val admissionBursts = Binder.get(environment)
+            .bind("payment.admission-burst", Bindable.mapOf(String::class.java, Int::class.javaObjectType))
+            .orElse(emptyMap())
         val request = HttpRequest.newBuilder()
             .uri(URI("http://${paymentProviderHostPort}/external/accounts?serviceName=$serviceName&token=$token"))
             .GET()
@@ -78,7 +81,8 @@ class PaymentAccountsConfig {
                     token,
                     processingP99,
                     workerCount,
-                    registry
+                    registry,
+                    admissionBursts[it.accountName]
                 )
             }
     }
