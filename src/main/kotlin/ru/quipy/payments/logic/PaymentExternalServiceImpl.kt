@@ -111,7 +111,7 @@ class PaymentExternalSystemAdapterImpl(
                     if (callTimeout == null || !e.isRequestTimeout()) throw e
 
                     awaitRatePermit(deadline, requestAverageProcessingTime.toMillis().coerceAtLeast(1L))
-                    executeAttempt(request, deadline)
+                    executeAttempt(request, deadline, useRemainingBudget = true)
                 }
                 val body = try {
                     mapper.readValue(responseBody, ExternalSysResponse::class.java)
@@ -158,10 +158,15 @@ class PaymentExternalSystemAdapterImpl(
         }
     }
 
-    private fun executeAttempt(request: Request, deadline: Long): Pair<Int, String?> {
+    private fun executeAttempt(
+        request: Request,
+        deadline: Long,
+        useRemainingBudget: Boolean = false,
+    ): Pair<Int, String?> {
         val call = client.newCall(request)
         if (callTimeout != null) {
-            val timeoutMillis = minOf(callTimeout.toMillis(), remainingHttpMillis(deadline))
+            val remainingMillis = remainingHttpMillis(deadline)
+            val timeoutMillis = if (useRemainingBudget) remainingMillis else minOf(callTimeout.toMillis(), remainingMillis)
             if (timeoutMillis <= 0) throw SocketTimeoutException("Payment deadline reached")
             call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
         }
