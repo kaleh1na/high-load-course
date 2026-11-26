@@ -39,6 +39,7 @@ class PaymentExternalSystemAdapterImpl(
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
         private const val RESULT_RESERVE_MILLIS = 500L
+        private const val MAX_ATTEMPTS = 3
     }
 
     private val serviceName = properties.serviceName
@@ -105,39 +106,7 @@ class PaymentExternalSystemAdapterImpl(
 
             awaitRatePermit(deadline)
             paymentLoadManager.processing {
-                val firstAttemptStartedAt = System.nanoTime()
-                val (responseCode, responseBody) = try {
-                    executeAttempt(request, deadline)
-                } catch (e: InterruptedIOException) {
-                    if (callTimeout == null || !e.isRequestTimeout()) throw e
-
-                    val firstAttemptMillis = elapsedMillis(firstAttemptStartedAt)
-                    val remainingAfterTimeoutMillis = remainingHttpMillis(deadline)
-                    var retryStartedAt: Long? = null
-                    var retryBudgetMillis: Long? = null
-                    var outcome = "deadline_before_retry"
-                    try {
-                        awaitRatePermit(deadline, requestAverageProcessingTime.toMillis().coerceAtLeast(1L))
-                        retryBudgetMillis = remainingHttpMillis(deadline)
-                        retryStartedAt = System.nanoTime()
-                        executeAttempt(request, deadline, useRemainingBudget = true).also { (status, _) ->
-                            outcome = "http_$status"
-                        }
-                    } catch (retryError: Exception) {
-                        outcome = when {
-                            !retryError.isRequestTimeout() -> "error"
-                            retryStartedAt != null -> "retry_timeout"
-                            else -> outcome
-                        }
-                        throw retryError
-                    } finally {
-                        logger.info(
-                            "[{}] Payment retry txId={} firstAttemptMs={} remainingAfterTimeoutMs={} retryBudgetMs={} retryAttemptMs={} outcome={}",
-                            accountName, transactionId, firstAttemptMillis, remainingAfterTimeoutMillis,
-                            retryBudgetMillis, retryStartedAt?.let(::elapsedMillis), outcome
-                        )
-                    }
-                }
+                val (responseCode, responseBody) = executeWithRetries(request, deadline)
                 val body = try {
                     mapper.readValue(responseBody, ExternalSysResponse::class.java)
                 } catch (e: Exception) {
@@ -177,13 +146,22 @@ class PaymentExternalSystemAdapterImpl(
 
     private fun remainingHttpMillis(deadline: Long): Long = deadline - now() - RESULT_RESERVE_MILLIS
 
-    private fun elapsedMillis(startedAt: Long): Long =
-        TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt)
-
     private fun awaitRatePermit(deadline: Long, minimumMillis: Long = 1L) {
         if (!rateLimiter.tickBlocking { callTimeout == null || remainingHttpMillis(deadline) >= minimumMillis }) {
             throw SocketTimeoutException("Payment deadline reached while waiting for rate limit")
         }
+    }
+
+    private fun executeWithRetries(request: Request, deadline: Long): Pair<Int, String?> {
+        repeat(MAX_ATTEMPTS - 1) {
+            try {
+                return executeAttempt(request, deadline)
+            } catch (e: InterruptedIOException) {
+                if (callTimeout == null || !e.isRequestTimeout()) throw e
+                awaitRatePermit(deadline, requestAverageProcessingTime.toMillis().coerceAtLeast(1L))
+            }
+        }
+        return executeAttempt(request, deadline, useRemainingBudget = true)
     }
 
     private fun executeAttempt(
