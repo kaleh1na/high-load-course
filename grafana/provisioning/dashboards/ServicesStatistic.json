@@ -730,7 +730,7 @@
               },
               "editorMode": "code",
               "exemplar": true,
-              "expr": "sum(increase(test_duration_count{service=~\"$service\"}[$__range])) by (service, testOutcome)",
+              "expr": "sum(increase(test_duration_count{service=~\"$service\",job=\"bombardier-docker-network-job\"}[$__range])) by (service, testOutcome)",
               "interval": "",
               "legendFormat": "{{service}} - {{testOutcome}}",
               "range": true,
@@ -2162,7 +2162,7 @@
             "type": "prometheus",
             "uid": "PBFA97CFB590B2093"
           },
-          "description": "Estimated p95 and p99 over 5 minutes, per account. Includes HTTP calls and response body reading, including failed calls; excludes queueing and rate limiter waits.",
+          "description": "Estimated p50, p80, p90, p95 and p99 over the last 30 seconds, per account. Measures completed HTTP attempts, including response body reading and failed calls. Queueing and rate limiter waits are excluded.",
           "fieldConfig": {
             "defaults": {
               "unit": "s",
@@ -2200,19 +2200,91 @@
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.95, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "expr": "histogram_quantile(0.95, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[30s])))",
               "legendFormat": "{{service}} / {{account}} — p95",
               "range": true,
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.99, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[5m])))",
+              "expr": "histogram_quantile(0.99, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[30s])))",
               "legendFormat": "{{service}} / {{account}} — p99",
               "range": true,
               "refId": "B"
+            },
+            {
+              "expr": "histogram_quantile(0.5, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[30s])))",
+              "legendFormat": "{{service}} / {{account}} — p50",
+              "range": true,
+              "refId": "C"
+            },
+            {
+              "expr": "histogram_quantile(0.8, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[30s])))",
+              "legendFormat": "{{service}} / {{account}} — p80",
+              "range": true,
+              "refId": "D"
+            },
+            {
+              "expr": "histogram_quantile(0.9, sum by (le, service, account) (rate(payment_provider_request_duration_seconds_bucket{service=~\"$service\"}[30s])))",
+              "legendFormat": "{{service}} / {{account}} — p90",
+              "range": true,
+              "refId": "E"
             }
           ],
-          "title": "Payment provider duration (p95 / p99)",
+          "title": "Payment provider duration (p50 / p80 / p90 / p95 / p99)",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "PBFA97CFB590B2093"
+          },
+          "description": "Repeat HTTP calls started after a timeout in the last minute. Attempt 2 is the first retry and attempt 3 is the second retry.",
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "min": 0,
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "spanNulls": false
+              }
+            },
+            "overrides": []
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 36
+          },
+          "id": 104,
+          "options": {
+            "legend": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "none"
+            }
+          },
+          "targets": [
+            {
+              "expr": "sum by (service, account, attempt) (increase(payment_provider_retries_total{service=~\"$service\"}[1m]))",
+              "legendFormat": "{{service}} / {{account}} — attempt {{attempt}}",
+              "range": true,
+              "refId": "A"
+            }
+          ],
+          "title": "Payment provider retries (last minute)",
           "type": "timeseries"
         }
       ],

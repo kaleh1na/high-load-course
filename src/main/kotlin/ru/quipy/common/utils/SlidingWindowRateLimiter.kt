@@ -28,9 +28,11 @@ class SlidingWindowRateLimiter(
         return true
     }
 
-    fun tickBlocking() {
-        while (!tick()) {
+    fun tickBlocking(canWait: () -> Boolean = { true }): Boolean {
+        while (canWait()) {
+            if (tick()) return true
             Thread.sleep(10)
         }
+        return false
     }
 }

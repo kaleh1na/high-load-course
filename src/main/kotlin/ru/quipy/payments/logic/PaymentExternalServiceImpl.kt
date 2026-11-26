@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import okhttp3.OkHttpClient
@@ -13,6 +14,7 @@ import ru.quipy.common.utils.SlidingWindowRateLimiter
 import ru.quipy.common.utils.TokenBucketRateLimiter
 import ru.quipy.core.EventSourcingService
 import ru.quipy.payments.api.PaymentAggregate
+import java.io.InterruptedIOException
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.*
@@ -29,6 +31,7 @@ class PaymentExternalSystemAdapterImpl(
     workerCount: Int,
     private val registry: MeterRegistry,
     private val admissionBurst: Int? = null,
+    private val callTimeout: Duration? = null,
 ) : PaymentExternalSystemAdapter {
 
     companion object {
@@ -36,6 +39,8 @@ class PaymentExternalSystemAdapterImpl(
 
         val emptyBody = RequestBody.create(null, ByteArray(0))
         val mapper = ObjectMapper().registerKotlinModule()
+        private const val RESULT_RESERVE_MILLIS = 500L
+        private const val MAX_ATTEMPTS = 3
     }
 
     private val serviceName = properties.serviceName
@@ -44,7 +49,13 @@ class PaymentExternalSystemAdapterImpl(
     private val rateLimitPerSec = properties.rateLimitPerSec
     private val parallelRequests = properties.parallelRequests
 
-    private val client = OkHttpClient.Builder().build()
+    init {
+        require(callTimeout == null || callTimeout.toMillis() > 0)
+    }
+
+    private val client = OkHttpClient.Builder()
+        .retryOnConnectionFailure(callTimeout == null)
+        .build()
     private val rateLimiter = SlidingWindowRateLimiter(rateLimitPerSec.toLong(), Duration.ofSeconds(1))
     private val ongoingWindow = OngoingWindow(parallelRequests)
     private val paymentLoadManager = PaymentLoadManager(properties, processingP99, workerCount)
@@ -58,6 +69,16 @@ class PaymentExternalSystemAdapterImpl(
         .tags("service", serviceName, "account", accountName)
         .publishPercentileHistogram()
         .register(registry)
+    private val retryCounters = if (callTimeout != null) {
+        (2..MAX_ATTEMPTS).associateWith { attempt ->
+            Counter.builder("payment_provider_retries")
+                .description("Repeat HTTP attempts to the payment provider after a timeout")
+                .tags("service", serviceName, "account", accountName, "attempt", attempt.toString())
+                .register(registry)
+        }
+    } else {
+        emptyMap()
+    }
 
     override fun tryReservePayment(deadline: Long): PaymentReservation {
         val reservation = paymentLoadManager.tryReserve(deadline)
@@ -94,16 +115,9 @@ class PaymentExternalSystemAdapterImpl(
                 post(emptyBody)
             }.build()
 
-            rateLimiter.tickBlocking()
+            awaitRatePermit(deadline)
             paymentLoadManager.processing {
-                val sample = Timer.start(registry)
-                val (responseCode, responseBody) = try {
-                    client.newCall(request).execute().use { response ->
-                        response.code to response.body?.string()
-                    }
-                } finally {
-                    sample.stop(requestDuration)
-                }
+                val (responseCode, responseBody) = executeWithRetries(request, deadline)
                 val body = try {
                     mapper.readValue(responseBody, ExternalSysResponse::class.java)
                 } catch (e: Exception) {
@@ -120,8 +134,8 @@ class PaymentExternalSystemAdapterImpl(
                 }
             }
         } catch (e: Exception) {
-            when (e) {
-                is SocketTimeoutException -> {
+            when {
+                e.isRequestTimeout() -> {
                     logger.error("[$accountName] Payment timeout for txId: $transactionId, payment: $paymentId", e)
                     paymentESService.update(paymentId) {
                         it.logProcessing(false, now(), transactionId, reason = "Request timeout.")
@@ -140,6 +154,52 @@ class PaymentExternalSystemAdapterImpl(
             ongoingWindow.release()
         }
     }
+
+    private fun remainingHttpMillis(deadline: Long): Long = deadline - now() - RESULT_RESERVE_MILLIS
+
+    private fun awaitRatePermit(deadline: Long, minimumMillis: Long = 1L) {
+        if (!rateLimiter.tickBlocking { callTimeout == null || remainingHttpMillis(deadline) >= minimumMillis }) {
+            throw SocketTimeoutException("Payment deadline reached while waiting for rate limit")
+        }
+    }
+
+    private fun executeWithRetries(request: Request, deadline: Long): Pair<Int, String?> {
+        for (attempt in 1 until MAX_ATTEMPTS) {
+            try {
+                return executeAttempt(request, deadline, attempt)
+            } catch (e: InterruptedIOException) {
+                if (callTimeout == null || !e.isRequestTimeout()) throw e
+                awaitRatePermit(deadline, requestAverageProcessingTime.toMillis().coerceAtLeast(1L))
+            }
+        }
+        return executeAttempt(request, deadline, MAX_ATTEMPTS)
+    }
+
+    private fun executeAttempt(
+        request: Request,
+        deadline: Long,
+        attempt: Int,
+    ): Pair<Int, String?> {
+        val call = client.newCall(request)
+        if (callTimeout != null) {
+            val remainingMillis = remainingHttpMillis(deadline)
+            val timeoutMillis = if (attempt == MAX_ATTEMPTS) remainingMillis else minOf(callTimeout.toMillis(), remainingMillis)
+            if (timeoutMillis <= 0) throw SocketTimeoutException("Payment deadline reached")
+            call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
+        }
+        retryCounters[attempt]?.increment()
+        val sample = Timer.start(registry)
+        try {
+            return call.execute().use { response ->
+                response.code to response.body?.string()
+            }
+        } finally {
+            sample.stop(requestDuration)
+        }
+    }
+
+    private fun Throwable.isRequestTimeout(): Boolean =
+        this is SocketTimeoutException || (this is InterruptedIOException && message == "timeout")
 
     override fun price() = properties.price
 
