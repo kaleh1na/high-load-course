@@ -2,6 +2,7 @@ package ru.quipy.payments.logic
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
+import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
 import okhttp3.OkHttpClient
@@ -68,6 +69,16 @@ class PaymentExternalSystemAdapterImpl(
         .tags("service", serviceName, "account", accountName)
         .publishPercentileHistogram()
         .register(registry)
+    private val retryCounters = if (callTimeout != null) {
+        (2..MAX_ATTEMPTS).associateWith { attempt ->
+            Counter.builder("payment_provider_retries")
+                .description("Repeat HTTP attempts to the payment provider after a timeout")
+                .tags("service", serviceName, "account", accountName, "attempt", attempt.toString())
+                .register(registry)
+        }
+    } else {
+        emptyMap()
+    }
 
     override fun tryReservePayment(deadline: Long): PaymentReservation {
         val reservation = paymentLoadManager.tryReserve(deadline)
@@ -153,29 +164,30 @@ class PaymentExternalSystemAdapterImpl(
     }
 
     private fun executeWithRetries(request: Request, deadline: Long): Pair<Int, String?> {
-        repeat(MAX_ATTEMPTS - 1) {
+        for (attempt in 1 until MAX_ATTEMPTS) {
             try {
-                return executeAttempt(request, deadline)
+                return executeAttempt(request, deadline, attempt)
             } catch (e: InterruptedIOException) {
                 if (callTimeout == null || !e.isRequestTimeout()) throw e
                 awaitRatePermit(deadline, requestAverageProcessingTime.toMillis().coerceAtLeast(1L))
             }
         }
-        return executeAttempt(request, deadline, useRemainingBudget = true)
+        return executeAttempt(request, deadline, MAX_ATTEMPTS)
     }
 
     private fun executeAttempt(
         request: Request,
         deadline: Long,
-        useRemainingBudget: Boolean = false,
+        attempt: Int,
     ): Pair<Int, String?> {
         val call = client.newCall(request)
         if (callTimeout != null) {
             val remainingMillis = remainingHttpMillis(deadline)
-            val timeoutMillis = if (useRemainingBudget) remainingMillis else minOf(callTimeout.toMillis(), remainingMillis)
+            val timeoutMillis = if (attempt == MAX_ATTEMPTS) remainingMillis else minOf(callTimeout.toMillis(), remainingMillis)
             if (timeoutMillis <= 0) throw SocketTimeoutException("Payment deadline reached")
             call.timeout().timeout(timeoutMillis, TimeUnit.MILLISECONDS)
         }
+        retryCounters[attempt]?.increment()
         val sample = Timer.start(registry)
         try {
             return call.execute().use { response ->
